@@ -57,6 +57,8 @@ def parseargs(args):
     
     parser.add_option("-u", "--useronly", default=False, action="store_true",
       help='show processes for my userid only')
+    parser.add_option("-v", "--verbose", default=False, action="store_true",
+      help='show verbose output including library & source package')
     
     (opts, args) = parser.parse_args(args)
     return (opts, args)
@@ -98,6 +100,23 @@ def get_open_files(pid):
             files.append(filename)
     return files
 
+def getlength(position,lst):
+    hold_lens = []
+    found = len(lst)
+    for i in range(found):
+        lens = len(zip(lst[i][position]))
+        hold_lens.append(lens)
+    return max(hold_lens)
+
+def getcmdline(pid):
+    try:
+        cmdline = open('/proc/' +pid+ '/cmdline', 'r').read()
+    except (OSError, IOError), e:
+        print >>sys.stderr, "Couldn't access process information for %s: %s" % (pid, str(e))
+    # proc cmdline is null-delimited so clean that up
+    cmdline = cmdline.replace('\000', ' ')
+    return cmdline
+
 def main(args):
     (opts, args)  = parseargs(args)
 
@@ -112,7 +131,7 @@ def main(args):
         my.setCacheDir()
     my.conf.cache = True
     
-    needing_restart = set()
+    needing_restart = []
 
     boot_time = utils.get_boot_time()
     for pid in return_running_pids(uid=myuid):
@@ -130,7 +149,7 @@ def main(args):
             # if the file is in a pkg which has been updated since we started the pid - then it needs to be restarted            
             for pkg in my.rpmdb.searchFiles(just_fn):
                 if float(pkg.installtime) > float(pid_start):
-                    needing_restart.add(pid)
+                    needing_restart.append([pid, just_fn, pkg.name])
                     found_match = True
                     continue
                 if just_fn in pkg.ghostlist:
@@ -144,7 +163,7 @@ def main(args):
             if fn.find('(deleted)') != -1: 
                 # and it is from /*bin/* then it needs to be restarted 
                 if yum.misc.re_primary_filename(just_fn):
-                    needing_restart.add(pid)
+                    needing_restart.append([pid, just_fn, pkg.name])
                     found_match = True
                     continue
 
@@ -155,24 +174,53 @@ def main(args):
                     if just_fn in oldpkg.ghostlist:
                         continue
                     if my.rpmdb.installed(oldpkg.name):
-                        needing_restart.add(pid)
+                        needing_restart.append([pid, just_fn, pkg.name])
                         found_match = True
                         break
 
-           
-            
-    for pid in needing_restart:
-        try:
-            cmdline = open('/proc/' +pid+ '/cmdline', 'r').read()
-        except (OSError, IOError), e:
-            print >>sys.stderr, "Couldn't access process information for %s: %s" % (pid, str(e))
-            continue
-        # proc cmdline is null-delimited so clean that up
-        cmdline = cmdline.replace('\000', ' ')
-        print '%s : %s' % (pid, cmdline)
-        
-    return 0
-    
+
+
+    if needing_restart:
+        # get width of output
+        hold_lens = []
+        for pid,lib,pkg in needing_restart:
+            cmdline = getcmdline(pid)
+            lens = len(cmdline)
+            hold_lens.append(lens)
+            cmdwidth = max(hold_lens)
+
+        pidwidth = getlength(0,needing_restart)
+        libwidth = 0
+        pkgwidth = 0
+        spacer = 2
+        if opts.verbose:
+            libwidth = getlength(1,needing_restart)
+            pkgwidth = getlength(2,needing_restart)
+            spacer = 6
+
+        width = pidwidth + libwidth + pkgwidth + cmdwidth
+
+        print '-' * (width + spacer)
+        if opts.verbose:
+            print '{pid:{widthpid}}  {cmd:{widthcmd}}  {lib:{widthlib}}  {pkg:{widthpkg}}'.format(pid='PID', widthpid=pidwidth,
+              cmd='CMD', widthcmd=cmdwidth, lib='Library', widthlib=libwidth, pkg='Package', widthpkg=pkgwidth)
+        else:
+            print '{pid:{widthpid}}  {cmd:{widthcmd}}'.format(pid='PID', widthpid=pidwidth, cmd='CMD', widthcmd=cmdwidth)
+        print '-' * (width + spacer)
+
+        for pid,lib,pkg in needing_restart:
+            cmdline = getcmdline(pid)
+            if opts.verbose:
+                print '{pid:{widthpid}}  {cmd:{widthcmd}}  {lib:{widthlib}}  {pkg:{widthpkg}}'.format(pid=pid, widthpid=pidwidth,
+                  cmd=cmdline, widthcmd=cmdwidth, lib=lib, widthlib=libwidth, pkg=pkg, widthpkg=pkgwidth)
+            else:
+                print '{pid:{widthpid}}  {cmd:{widthcmd}}'.format(pid=pid, widthpid=pidwidth, cmd=cmdline, widthcmd=cmdwidth)
+
+        return 0
+    else:
+        if opts.verbose:
+            print 'No programs that started running before they or some component they use were updated.'
+       
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv))
